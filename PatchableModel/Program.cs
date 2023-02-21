@@ -30,12 +30,12 @@ app.MapPost("/demomodels", async (HttpRequest request, CancellationToken cancell
 
 	// Create new object (generating id), apply incoming property values:
 	var model = new DemoModel { id = Guid.NewGuid() };
-	var patchResult = model.Patch(jsonDocument);
-	if (patchResult is PatchResult.Error error)
+	var patchResult = model.UpdateModel(jsonDocument, HttpMethod.Post);
+	if (patchResult is UpdateResult.Error error)
 	{
 		return Results.BadRequest(error.ValidationResults); // Would be ProblemDetails
 	}
-	if (patchResult is PatchResult.Ok || patchResult is PatchResult.NoChanges)
+	if (patchResult is UpdateResult.Ok || patchResult is UpdateResult.NoChanges)
 	{
 		mockDatasource[model.id] = model; // Would really save to repository
 		return Results.Created($"{request.Path}/{model.id}", model);
@@ -49,18 +49,18 @@ app.MapPut("/demomodels/{id:guid}", async (HttpRequest request, Guid id, Cancell
 
 	// Look up existing object (would really be from repository), create new if required (with provided id), apply incoming property values:
 	var model = mockDatasource.ContainsKey(id) ? mockDatasource[id] : new DemoModel { id = id };
-	var patchResult = model.Patch(jsonDocument);
-	if (patchResult is PatchResult.Error error)
+	var patchResult = model.UpdateModel(jsonDocument, HttpMethod.Put);
+	if (patchResult is UpdateResult.Error error)
 	{
 		return Results.BadRequest(error.ValidationResults); // Would be ProblemDetails
 	}
-	if (patchResult is PatchResult.Ok || patchResult is PatchResult.NoChanges)
+	if (patchResult is UpdateResult.Ok || patchResult is UpdateResult.NoChanges)
 	{
 		// This would really save to repository and return result...
 		if (mockDatasource.ContainsKey(id))
 		{
 			mockDatasource[model.id] = model;
-			return Results.Ok();
+			return Results.Ok(model);
 		}
 		mockDatasource[model.id] = model;
 		return Results.Created($"{request.Path}/{model.id}", model);
@@ -78,19 +78,15 @@ app.MapMethods("/demomodels/{id:guid}", new[] { "patch" }, async (HttpRequest re
 	{
 		return Results.NotFound(); // Would be ProblemDetails
 	}
-	var patchResult = model.Patch(jsonDocument);
-	if (patchResult is PatchResult.Error error)
+	var patchResult = model.UpdateModel(jsonDocument, HttpMethod.Patch);
+	if (patchResult is UpdateResult.Error error)
 	{
 		return Results.BadRequest(error.ValidationResults); // Would be ProblemDetails
 	}
-	if (patchResult is PatchResult.Ok)
+	if (patchResult is UpdateResult.Ok || patchResult is UpdateResult.NoChanges)
 	{
 		mockDatasource[model.id] = model; // Would really save to repository
-		return Results.Ok();
-	}
-	if (patchResult is PatchResult.NoChanges) // Optional, "no changes" could also be treated the same as successful patch
-	{
-		return Results.NoContent();
+		return Results.Ok(model);
 	}
 	return Results.StatusCode(StatusCodes.Status500InternalServerError); // Would be ProblemDetails
 }).WithName("PatchDemoModel").Accepts<DemoModel>("application/json");

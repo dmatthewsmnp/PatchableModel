@@ -1,19 +1,19 @@
 ﻿namespace PatchableModel.Models;
 
-public class DemoModel : PatchableModel, IValidatableObject
+public class DemoModel : UpdateableModel, IValidatableObject
 {
 	public Guid id { get; init; }
 
-	[Patchable]
+	[Updateable]
 	[Required(AllowEmptyStrings = false, ErrorMessage = "This is required")]
 	public string? name { get; set; }
 
-	[Patchable]
-	public int no { get; set; }
+	[Updateable]
+	public int? no { get; set; } = 77;
 
 	public DateTimeOffset lastUpdateDateTime { get; set; } = DateTimeOffset.UtcNow;
 
-	public override void OnChange()
+	public override void OnModelUpdated()
 		=> lastUpdateDateTime = DateTimeOffset.UtcNow;
 
 	public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
