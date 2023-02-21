@@ -68,8 +68,7 @@ app.MapPut("/demomodels/{id:guid}", async (HttpRequest request, Guid id, Cancell
 	return Results.StatusCode(StatusCodes.Status500InternalServerError); // Would be ProblemDetails
 }).WithName("PutDemoModel").Accepts<DemoModel>("application/json");
 
-// (vvv note MapPatch is available in .NET7 vvv)
-app.MapMethods("/demomodels/{id:guid}", new[] { "patch" }, async (HttpRequest request, Guid id, CancellationToken cancellationToken) =>
+app.MapPatch("/demomodels/{id:guid}", async (HttpRequest request, Guid id, CancellationToken cancellationToken) =>
 {
 	using var jsonDocument = await JsonDocument.ParseAsync(request.Body, cancellationToken: cancellationToken);
 
