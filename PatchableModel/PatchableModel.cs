@@ -5,19 +5,10 @@ namespace PatchableModel;
 public abstract class PatchableModel
 {
 	/// <summary>
-	/// Optional pre-validation method: test whether incoming Json properties are valid
+	/// Flag for whether to continue through Patch operation when validation error occurs (true, default) and return
+	/// validation results for all invalid properties, or to halt immediately at first validation failure (false)
 	/// </summary>
-	/// <param name="sourceProperties">Dictionary of property names with the corresponding incoming JsonElement</param>
-	/// <returns>An empty collection if ValidationResults if the request is valid, a non-empty collection if it is not (will abort request)</returns>
-	public virtual IEnumerable<ValidationResult> PreValidate(Dictionary<string, JsonElement> sourceProperties)
-		=> Array.Empty<ValidationResult>();
-
-	/// <summary>
-	/// Optional post-validation method: test whether post-update object is valid
-	/// </summary>
-	/// <returns>An empty collection if ValidationResults if the ending state is valid, a non-empty collection if it is not (will abort save of object)</returns>
-	public virtual IEnumerable<ValidationResult> PostValidate()
-		=> Array.Empty<ValidationResult>();
+	protected bool _validateAllProperties { get; init; }
 
 	/// <summary>
 	/// Optional post-update callback method, in case any steps need to be performed (i.e. updating metadata) prior to saving updated object
@@ -47,27 +38,38 @@ public abstract class PatchableModel
 			return new PatchResult.NoChanges();
 		}
 
-		// Run pre-validation against incoming document:
-		var preValidationResults = PreValidate(sourceProperties);
-		if (preValidationResults.Any())
-		{
-			return new PatchResult.Error(preValidationResults);
-		}
-
-		// Iterate through collection of properties to be updated:
 		var updatedProperties = new List<string>();
 		var patchErrors = new List<ValidationResult>();
 		var nullabilityContext = new NullabilityInfoContext();
+
+		// Iterate through collection of properties to be updated:
 		foreach (var kvp in sourceProperties)
 		{
+			// If any validation errors have occurred, break unless we are configured to validate all properties:
+			if (patchErrors.Count > 0 && !_validateAllProperties)
+			{
+				break;
+			}
+
+			// Retrieve target property for source value, and any validation attributes:
 			var targetProp = patchableProperties[kvp.Key];
+			var validationAttrs = targetProp.GetCustomAttributes<ValidationAttribute>();
+
+			// Check for explicitly-null incoming value:
 			if (kvp.Value.ValueKind == JsonValueKind.Null)
 			{
-				// Incoming value is present and explicitly null; ensure target property is nullable:
-				if (nullabilityContext.Create(targetProp).WriteState != NullabilityState.Nullable)
+				// Ensure target property does not have Required attribute:
+				var requiredAttribute = validationAttrs.FirstOrDefault(attr => attr is RequiredAttribute);
+				if (requiredAttribute is not null)
 				{
-					patchErrors.Add(new("Value must not be null", new[] { kvp.Key })); // Note: could break here to save time, unless caller wants all property results
+					patchErrors.Add(new(requiredAttribute.ErrorMessage, new[] { kvp.Key }));
 				}
+				// Ensure target property is nullable:
+				else if (nullabilityContext.Create(targetProp).WriteState != NullabilityState.Nullable)
+				{
+					patchErrors.Add(new("Value must not be null", new[] { kvp.Key }));
+				}
+				// If target is not already null, update now:
 				else if (targetProp.GetValue(this) is not null)
 				{
 					targetProp.SetValue(this, null);
@@ -75,10 +77,27 @@ public abstract class PatchableModel
 				}
 				continue;
 			}
+
 			try
 			{
+				// Attempt to deserialize incoming value into required target type (note this will throw JsonException
+				// if type conversion fails):
 				var sourceValue = kvp.Value.Deserialize(targetProp.PropertyType);
-				if (targetProp.GetValue(this) != sourceValue) // Note: will always be true for reference types
+
+				// Run validation against incoming value for any validation attributes on target property:
+				bool validationError = false;
+				foreach (var validationAttr in validationAttrs)
+				{
+					if (!validationAttr.IsValid(sourceValue))
+					{
+						patchErrors.Add(new(validationAttr.ErrorMessage, new[] { kvp.Key }));
+						validationError = true;
+					}
+				}
+
+				// If validation did not fail, compare target property to incoming value, and update if required (note that
+				// reference types will always meet != criteria, meaning they will be updated even if equivalent):
+				if (!validationError && targetProp.GetValue(this) != sourceValue)
 				{
 					targetProp.SetValue(this, sourceValue);
 					updatedProperties.Add(kvp.Key);
@@ -86,7 +105,7 @@ public abstract class PatchableModel
 			}
 			catch (JsonException)
 			{
-				patchErrors.Add(new("Error deserializing value", new[] { kvp.Key })); // Note: could break here to save time, unless caller wants all property results
+				patchErrors.Add(new("Error deserializing value", new[] { kvp.Key }));
 			}
 		}
 
@@ -101,11 +120,11 @@ public abstract class PatchableModel
 			return new PatchResult.NoChanges();
 		}
 
-		// Run post-validation:
-		var postValidationResults = PostValidate();
-		if (postValidationResults.Any())
+		// Run validation against ending object state:
+		var endingValidationContext = new ValidationContext(this);
+		if (!Validator.TryValidateObject(this, endingValidationContext, patchErrors))
 		{
-			return new PatchResult.Error(postValidationResults);
+			return new PatchResult.Error(patchErrors);
 		}
 
 		// Run OnChange method, so child class can perform any required activities:
