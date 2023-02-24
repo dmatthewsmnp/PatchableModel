@@ -2,7 +2,7 @@
 
 namespace PatchableModel;
 
-public abstract class UpdateableModel
+public abstract record UpdateableModel
 {
 	internal const string RequiredPropertyErrorMessage = "Value must not be null";
 	internal const string PropertyDeserializationErrorMessage = "Error deserializing value";

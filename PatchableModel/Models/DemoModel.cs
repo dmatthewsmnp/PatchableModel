@@ -1,6 +1,6 @@
 ﻿namespace PatchableModel.Models;
 
-public class DemoModel : UpdateableModel, IValidatableObject
+public record DemoModel : UpdateableModel, IValidatableObject
 {
 	public Guid id { get; init; }
 
