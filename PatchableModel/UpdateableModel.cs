@@ -12,17 +12,19 @@ public abstract class UpdateableModel
 	/// Flag for whether to continue through UpdateModel operation when validation error occurs (true, default) and return
 	/// validation results for all invalid properties, or to halt immediately at first validation failure (false)
 	/// </summary>
-	protected virtual bool _validateAllProperties { get; init; }
+	protected virtual bool ValidateAllProperties { get; init; }
 
 	/// <summary>
 	/// Optional post-update callback method, in case any steps need to be performed (i.e. updating metadata) prior to saving updated object
 	/// </summary>
-	public virtual void OnModelUpdated() { }
+	public virtual void OnModelUpdated(List<string> updatedProperties)
+	{
+	}
 
 	/// <summary>
-	/// UpdateModel method - apply sourceDocument to properties in this object marked Updateable
+	/// UpdateModel method - apply sourceDocument to properties marked Updateable in this object
 	/// </summary>
-	public UpdateResult UpdateModel(JsonDocument sourceDocument, HttpMethod httpMethod)
+	public UpdateResult UpdateModel(JsonElement sourceDocument, HttpMethod httpMethod)
 	{
 		// Build collection of properties in this object which have Updateable attribute:
 		var updateableProperties = GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -34,7 +36,7 @@ public abstract class UpdateableModel
 		}
 
 		// Build collection of properties from incoming document which align with Updateable properties:
-		var sourceProperties = sourceDocument.RootElement.EnumerateObject()
+		var sourceProperties = sourceDocument.EnumerateObject()
 			.Where(je => updateableProperties.ContainsKey(je.Name))
 			.ToDictionary(prop => prop.Name, prop => prop.Value);
 
@@ -45,7 +47,10 @@ public abstract class UpdateableModel
 		}
 
 		// If this is a PUT, all updateable properties should be included (where a POST could leave as default); add
-		// explicit null values for any properties that are not in source JSON:
+		// explicit null values for any properties that are not in source JSON (note this is not a perfect solution
+		// since it means all non-nullable properties are required when updating an existing object as opposed to creating
+		// a new one, but default auto-init values are not accessible here - would require caller to pass in a new object
+		// of this class which has been default-initialized in order to provide missing values):
 		if (httpMethod == HttpMethod.Put)
 		{
 			foreach (var missingKey in updateableProperties.Keys.Where(key => !sourceProperties.ContainsKey(key)))
@@ -62,13 +67,14 @@ public abstract class UpdateableModel
 		foreach (var kvp in sourceProperties)
 		{
 			// If any validation errors have occurred, break (unless we are configured to validate all properties):
-			if (validationErrors.Count > 0 && !_validateAllProperties)
+			if (validationErrors.Count > 0 && !ValidateAllProperties)
 			{
 				break;
 			}
 
-			// Retrieve target property for source value, and any attached validation attributes:
+			// Retrieve target property and current value, with any attached validation attributes:
 			var targetProp = updateableProperties[kvp.Key];
+			var targetPropValue = targetProp.GetValue(this);
 			var validationAttrs = targetProp.GetCustomAttributes<ValidationAttribute>();
 
 			// Check for explicitly-null incoming value:
@@ -86,42 +92,75 @@ public abstract class UpdateableModel
 					validationErrors.Add(new(RequiredPropertyErrorMessage, new[] { kvp.Key }));
 				}
 				// If target is not already null, update now:
-				else if (targetProp.GetValue(this) is not null)
+				else if (targetPropValue is not null)
 				{
 					targetProp.SetValue(this, null);
 					updatedProperties.Add(kvp.Key);
 				}
-				continue;
 			}
-
-			try
+			// If property is a nested UpdateableModel, hand off to its Update method:
+			else if (targetPropValue is UpdateableModel nestedUpdateable)
 			{
-				// Attempt to deserialize incoming value into required target type (note this will throw a
-				// JsonException if type conversion fails):
-				var sourceValue = kvp.Value.Deserialize(targetProp.PropertyType);
-
-				// Run all validation attributes on target property against incoming value:
-				bool validationError = false;
-				foreach (var validationAttr in validationAttrs)
+				var nestedUpdateResult = nestedUpdateable.UpdateModel(kvp.Value, httpMethod);
+				if (nestedUpdateResult is UpdateResult.Ok)
 				{
-					if (!validationAttr.IsValid(sourceValue))
-					{
-						validationErrors.Add(new(validationAttr.ErrorMessage, new[] { kvp.Key }));
-						validationError = true;
-					}
-				}
-
-				// If validation did not fail, compare target property to incoming value and update if required (note that
-				// reference types will always meet != criteria, meaning they will be updated even if equivalent):
-				if (!validationError && targetProp.GetValue(this) != sourceValue)
-				{
-					targetProp.SetValue(this, sourceValue);
 					updatedProperties.Add(kvp.Key);
 				}
+				else if (nestedUpdateResult is UpdateResult.Error updateError)
+				{
+					// Prepend nested member names with property name in validation result:
+					validationErrors.AddRange(updateError.ValidationResults.Select(vr =>
+						new ValidationResult(vr.ErrorMessage, vr.MemberNames.Select(mn => $"{kvp.Key}.{mn}"))));
+				}
 			}
-			catch (JsonException)
+			else
 			{
-				validationErrors.Add(new(PropertyDeserializationErrorMessage, new[] { kvp.Key }));
+				try
+				{
+					// Attempt to deserialize incoming value into required target type (note this will throw a
+					// JsonException if type conversion fails):
+					var sourceValue = kvp.Value.Deserialize(targetProp.PropertyType);
+
+					// Run all validation attributes on target property against incoming value:
+					bool validationError = false;
+					foreach (var validationAttr in validationAttrs)
+					{
+						if (!validationAttr.IsValid(sourceValue))
+						{
+							validationErrors.Add(new(validationAttr.ErrorMessage, new[] { kvp.Key }));
+							validationError = true;
+						}
+					}
+
+					// If validation did not fail, compare target property to incoming value and update if required (note that
+					// reference types will always meet != criteria, meaning they will be updated even if equivalent):
+					if (!validationError && targetPropValue != sourceValue)
+					{
+						// If this is a non-null complex type, run its own validation:
+						if (sourceValue is not null && !sourceValue.GetType().IsValueType)
+						{
+							var propertyValidationContext = new ValidationContext(sourceValue);
+							var propertyValidationErrors = new List<ValidationResult>();
+							if (!Validator.TryValidateObject(sourceValue, propertyValidationContext, propertyValidationErrors))
+							{
+								validationErrors.AddRange(propertyValidationErrors.Select(vr =>
+									new ValidationResult(vr.ErrorMessage, vr.MemberNames.Select(mn => $"{kvp.Key}.{mn}"))));
+								validationError = true;
+							}
+						}
+
+						// If sourceValue is still considered valid, apply update:
+						if (!validationError)
+						{
+							targetProp.SetValue(this, sourceValue);
+							updatedProperties.Add(kvp.Key);
+						}
+					}
+				}
+				catch (JsonException)
+				{
+					validationErrors.Add(new(PropertyDeserializationErrorMessage, new[] { kvp.Key }));
+				}
 			}
 		}
 		#endregion
@@ -145,7 +184,7 @@ public abstract class UpdateableModel
 		}
 
 		// Run OnModelUpdated method, so child class can perform any required activities:
-		OnModelUpdated();
+		OnModelUpdated(updatedProperties);
 
 		// Return success, with list of modified properties:
 		return new UpdateResult.Ok(updatedProperties);

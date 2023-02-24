@@ -30,7 +30,7 @@ app.MapPost("/demomodels", async (HttpRequest request, CancellationToken cancell
 
 	// Create new object (generating id), apply incoming property values:
 	var model = new DemoModel { id = Guid.NewGuid() };
-	var patchResult = model.UpdateModel(jsonDocument, HttpMethod.Post);
+	var patchResult = model.UpdateModel(jsonDocument.RootElement, HttpMethod.Post);
 	if (patchResult is UpdateResult.Error error)
 	{
 		return Results.BadRequest(error.ValidationResults); // Would be ProblemDetails
@@ -49,7 +49,7 @@ app.MapPut("/demomodels/{id:guid}", async (HttpRequest request, Guid id, Cancell
 
 	// Look up existing object (would really be from repository), create new if required (with provided id), apply incoming property values:
 	var model = mockDatasource.ContainsKey(id) ? mockDatasource[id] : new DemoModel { id = id };
-	var patchResult = model.UpdateModel(jsonDocument, HttpMethod.Put);
+	var patchResult = model.UpdateModel(jsonDocument.RootElement, HttpMethod.Put);
 	if (patchResult is UpdateResult.Error error)
 	{
 		return Results.BadRequest(error.ValidationResults); // Would be ProblemDetails
@@ -77,7 +77,7 @@ app.MapPatch("/demomodels/{id:guid}", async (HttpRequest request, Guid id, Cance
 	{
 		return Results.NotFound(); // Would be ProblemDetails
 	}
-	var patchResult = model.UpdateModel(jsonDocument, HttpMethod.Patch);
+	var patchResult = model.UpdateModel(jsonDocument.RootElement, HttpMethod.Patch);
 	if (patchResult is UpdateResult.Error error)
 	{
 		return Results.BadRequest(error.ValidationResults); // Would be ProblemDetails

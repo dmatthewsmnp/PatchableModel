@@ -11,9 +11,12 @@ public class DemoModel : UpdateableModel, IValidatableObject
 	[Updateable]
 	public int? no { get; set; } = 77;
 
+	[Updateable]
+	public DemoModel? nested { get; set; }
+
 	public DateTimeOffset lastUpdateDateTime { get; set; } = DateTimeOffset.UtcNow;
 
-	public override void OnModelUpdated()
+	public override void OnModelUpdated(List<string> updatedProperties)
 		=> lastUpdateDateTime = DateTimeOffset.UtcNow;
 
 	public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
